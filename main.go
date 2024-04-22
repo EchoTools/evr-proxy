@@ -46,27 +46,28 @@ var upgrader = websocket.Upgrader{
 }
 
 type Flags struct {
-	port        int
-	outputDir   string
-	timestamp   bool
-	setTitle    bool
-	destination string // host:port
-	logPath     string
-	debug       bool
-	mode        string
-	snaplen     int
-	promisc     bool
-	ip          string
-	botChannel  string
-	botToken    string
-	msgFormat   string
-	includeFrom string
-	excludeFrom string
-	include     string
-	exclude     string
-	rateLimit   int
-	listSymbols bool
-	version     string
+	port           int
+	outputDir      string
+	timestamp      bool
+	setTitle       bool
+	destination    string // host:port
+	logPath        string
+	debug          bool
+	mode           string
+	snaplen        int
+	promisc        bool
+	ip             string
+	botChannel     string
+	botToken       string
+	msgFormat      string
+	includeFrom    string
+	excludeFrom    string
+	include        string
+	exclude        string
+	rateLimit      int
+	listSymbols    bool
+	version        string
+	savePacketData bool
 }
 
 var flags = Flags{}
@@ -86,22 +87,23 @@ func init() {
 	flag.StringVar(&flags.mode, "mode", "intercept", "Mode to run in: intercept, inspect, or tap")
 	flag.StringVar(&flags.ip, "ip", "", "IP of network interface to listen/capture on")
 	flag.IntVar(&flags.port, "port", 6767, "TCP port to listen/capture on")
-	flag.StringVar(&flags.outputDir, "output", "", "Directory to output mismatched packets to")
-	flag.BoolVar(&flags.timestamp, "timestamp", false, "Add a timestamp to the output files")
 	flag.BoolVar(&flags.setTitle, "set-title", false, "Set the console title evrproxy")
 	flag.StringVar(&flags.destination, "upstream", "", "Upstream server host:port")
-	flag.StringVar(&flags.logPath, "log", "", "Enable logging to file")
-	flag.BoolVar(&flags.debug, "debug", false, "Enable debug logging")
 	flag.IntVar(&flags.snaplen, "snaplength", 262144, "Snapshot length (tap mode only)")
 	flag.BoolVar(&flags.promisc, "promiscuous", false, "Promiscuous mode (tap mode only)")
 	flag.StringVar(&flags.botChannel, "bot-channel", "", "Discord channel to send messages to")
 	flag.StringVar(&flags.botToken, "bot-token", "", "Discord bot token")
 	flag.StringVar(&flags.msgFormat, "msg-encoding", "json", "Output the parsed messages as JSON or YAML")
+	flag.IntVar(&flags.rateLimit, "rate-limit", 10, "Rate limit in messages per second")
 	flag.StringVar(&flags.includeFrom, "include-from", "", "File containing a list of message symbols to include")
 	flag.StringVar(&flags.excludeFrom, "exclude-from", "", "File containing a list of message symbols to exclude")
 	flag.StringVar(&flags.include, "include", "", "Comma separated list of message symbols to include")
-	flag.IntVar(&flags.rateLimit, "rate-limit", 10, "Rate limit in messages per second")
 	flag.BoolVar(&flags.listSymbols, "list-symbols", false, "List known message symbols")
+	flag.StringVar(&flags.logPath, "log", "", "Enable logging to file")
+	flag.BoolVar(&flags.debug, "debug", false, "Enable debug logging")
+	flag.StringVar(&flags.outputDir, "output", "", "Directory to output mismatched packets to")
+	flag.BoolVar(&flags.timestamp, "timestamp", false, "Add a timestamp to the output files")
+	flag.BoolVar(&flags.savePacketData, "save-packets", false, "Store packet bytes in output directory")
 	flag.Parse()
 
 	if flags.listSymbols {
@@ -433,7 +435,7 @@ func proxyWS(src *websocket.Conn, dst *websocket.Conn, name string) {
 		}
 
 		if flags.logPath != "" || !bytes.Equal(inBytes, outBytes) {
-			writePacketToFile(inBytes, outBytes)
+			writePacketSetToFile(inBytes, outBytes)
 		}
 		// compare outBytes to inBytes and show differences
 
@@ -448,7 +450,7 @@ func proxyWS(src *websocket.Conn, dst *websocket.Conn, name string) {
 	}
 }
 
-func writePacketToFile(in []byte, out []byte) {
+func writePacketSetToFile(in []byte, out []byte) {
 	var err error
 	var inpacket []evr.Message
 	if inpacket, err = evr.ParsePacket(in); err != nil {
@@ -563,6 +565,20 @@ func writePacketToFile(in []byte, out []byte) {
 	}
 }
 
+func writePacketToFile(data []byte, symbol evr.Symbol, withTimestamp bool) error {
+	// Save the struct to a binary file in the output directory
+	ts := ""
+	if withTimestamp {
+		ts = time.Now().Format("2006-01-02T15:04:05") + "_"
+	}
+	fn := fmt.Sprintf("%s/%s%s.bin", flags.outputDir, ts, symbol.String())
+	if err := os.WriteFile(fn, data, 0644); err != nil {
+		sugar.Errorf("failed to write file: %v", err)
+		return err
+	}
+	return nil
+}
+
 func proxySessionHTTP(w http.ResponseWriter, r *http.Request, dest url.URL) {
 	sugar.Infof("Received HTTP connection from %s", r.RemoteAddr)
 	// Create a new HTTP request for the target server.
@@ -657,25 +673,31 @@ func (h *httpStream) run() {
 							// The connection isn't of any interest, so break out of the loop
 							break
 						}
-						if bytes.Equal(unmaskedPayload[index:index+8], evr.MessageMarker) {
-							// Get the Symbol
-							symbol := binary.LittleEndian.Uint64(unmaskedPayload[index+8 : index+16])
-							logger.Info("Symbol", zap.String("symbol", evr.ToSymbol(symbol).String()))
-							if lo.Contains(h.symbols, evr.Symbol(symbol)) {
-								// Do something with the payload
-								size := int(binary.LittleEndian.Uint64(unmaskedPayload[index+16 : index+24]))
-								// Create a slice of the payload that contains the message
-								messagePayload := unmaskedPayload[index : index+24+size]
-								// Unmarshal the payload as evr messages
-								if len(messagePayload) > 0 {
-									messages, err := processPayload(messagePayload)
-									if err != nil {
-										logger.Error("Error unmarshalling message", zap.Error(err))
-									}
-									h.inspectFn(h, messages)
+						if len(unmaskedPayload) < index+24 {
+							// The payload is too short to contain a message, so break out of the loop
+							break
+						}
+
+						symbol := binary.LittleEndian.Uint64(unmaskedPayload[index+8 : index+16])
+						logger.Info("Symbol", zap.String("symbol", evr.ToSymbol(symbol).String()))
+						if lo.Contains(h.symbols, evr.Symbol(symbol)) {
+							// Do something with the payload
+							size := int(binary.LittleEndian.Uint64(unmaskedPayload[index+16 : index+24]))
+							if flags.savePacketData {
+								writePacketToFile(unmaskedPayload[index:index+24+size], evr.Symbol(symbol), flags.timestamp)
+							}
+							// Create a slice of the payload that contains the message
+							messagePayload := unmaskedPayload[index : index+24+size]
+							// Unmarshal the payload as evr messages
+							if len(messagePayload) > 0 {
+								messages, err := processPayload(messagePayload)
+								if err != nil {
+									logger.Error("Error unmarshalling message", zap.Error(err))
 								}
+								h.inspectFn(h, messages)
 							}
 						}
+
 						unmaskedPayload = unmaskedPayload[index+1:]
 					}
 				}

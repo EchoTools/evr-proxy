@@ -274,13 +274,13 @@ func main() {
 }
 
 func parseSymbols(strs []string) []evr.Symbol {
-	symbols := make([]evr.Symbol, len(strs))
+	symbols := make([]evr.Symbol, 0, len(strs))
 	for _, s := range strs {
 		if s == "" {
 			continue
 		}
 		v := evr.ToSymbol(s)
-		if v == 0 {
+		if v == evr.Symbol(0) {
 			logger.Fatal("Invalid symbol", zap.String("symbol", s))
 		}
 		symbols = append(symbols, v)

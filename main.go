@@ -113,8 +113,6 @@ func init() {
 		os.Exit(0)
 	}
 
-	date := time.Date(2077, 1, 23, 10, 15, 13, 441, time.UTC) // clock will always return that date
-	clock := constantClock(date)
 	level := zap.InfoLevel
 	if flags.debug {
 		level = zap.DebugLevel
@@ -124,13 +122,12 @@ func init() {
 		// Create a new logger that logs to a file
 		cfg := zap.NewProductionConfig()
 		cfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.RFC3339)
-
 		cfg.OutputPaths = []string{flags.logPath}
 		cfg.ErrorOutputPaths = []string{flags.logPath}
 
 		cfg.Level.SetLevel(level)
 		fileLogger, _ := cfg.Build()
-		fileLogger = fileLogger.WithOptions(zap.WithClock(clock))
+
 		defer fileLogger.Sync() // flushes buffer, if any
 
 		// Create a new logger that logs to the console
@@ -142,7 +139,6 @@ func init() {
 		cfg.Level.SetLevel(level)
 
 		consoleLogger, _ := cfg.Build()
-		consoleLogger = consoleLogger.WithOptions(zap.WithClock(clock))
 		defer consoleLogger.Sync() // flushes buffer, if any
 
 		// Create a new logger that logs to both the file and the console
@@ -156,7 +152,6 @@ func init() {
 		cfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.RFC3339)
 		cfg.Level.SetLevel(level)
 		logger, _ = cfg.Build()
-		logger = logger.WithOptions(zap.WithClock(clock))
 		defer logger.Sync() // flushes buffer, if any
 	}
 
@@ -677,7 +672,8 @@ func (h *httpStream) run() {
 							// The payload is too short to contain a message, so break out of the loop
 							break
 						}
-
+						logger = logger.With(zap.String("src", h.net.Src().String()))
+						logger = logger.With(zap.String("dst", h.net.Dst().String()))
 						symbol := binary.LittleEndian.Uint64(unmaskedPayload[index+8 : index+16])
 						logger.Info("Symbol", zap.String("symbol", evr.ToSymbol(symbol).String()))
 						if lo.Contains(h.symbols, evr.Symbol(symbol)) {

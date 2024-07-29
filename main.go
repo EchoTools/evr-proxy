@@ -668,15 +668,29 @@ func (h *httpStream) run() {
 							// The payload is too short to contain a message, so break out of the loop
 							break
 						}
-						logger = logger.With(zap.String("src", h.net.Src().String()))
+						logger := baseLogger.With(zap.String("src", h.net.Src().String()))
 						logger = logger.With(zap.String("dst", h.net.Dst().String()))
 						symbol := binary.LittleEndian.Uint64(unmaskedPayload[index+8 : index+16])
 						logger.Info("Symbol", zap.String("symbol", evr.ToSymbol(symbol).String()))
 						if lo.Contains(h.symbols, evr.Symbol(symbol)) {
 							// Do something with the payload
 							size := int(binary.LittleEndian.Uint64(unmaskedPayload[index+16 : index+24]))
+							if len(unmaskedPayload) < index+24+size {
+								// The payload is too short to contain a message, so break out of the loop
+								logger.Warn("Payload too short to contain a message")
+								// If saving packets, write the packet to disk
+								if flags.savePacketData {
+									if err := writeMessageDataToFile(unmaskedPayload[index:], evr.Symbol(symbol), flags.timestamp); err != nil {
+										logger.Warn("Error writing message data to file", zap.Error(err))
+									}
+								}
+
+								break
+							}
 							if flags.savePacketData {
-								writePacketToFile(unmaskedPayload[index:index+24+size], evr.Symbol(symbol), flags.timestamp)
+								if err := writeMessageDataToFile(unmaskedPayload[index:index+24+size], evr.Symbol(symbol), flags.timestamp); err != nil {
+									logger.Warn("Error writing message data to file", zap.Error(err))
+								}
 							}
 							// Create a slice of the payload that contains the message
 							messagePayload := unmaskedPayload[index : index+24+size]

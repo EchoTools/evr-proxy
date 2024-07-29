@@ -46,41 +46,35 @@ var upgrader = websocket.Upgrader{
 }
 
 type Flags struct {
-	port           int
-	outputDir      string
-	timestamp      bool
-	setTitle       bool
-	destination    string // host:port
-	logPath        string
-	debug          bool
-	mode           string
-	snaplen        int
-	promisc        bool
-	ip             string
-	botChannel     string
-	botToken       string
-	msgFormat      string
-	includeFrom    string
-	excludeFrom    string
-	include        string
-	exclude        string
-	rateLimit      int
-	listSymbols    bool
-	version        string
-	savePacketData bool
+	port             int
+	outputDir        string
+	timestamp        bool
+	setTitle         bool
+	destination      string // host:port
+	logPath          string
+	debug            bool
+	mode             string
+	snaplen          int
+	promisc          bool
+	ip               string
+	botChannel       string
+	botToken         string
+	msgFormat        string
+	includeFrom      string
+	excludeFrom      string
+	include          string
+	exclude          string
+	rateLimit        int
+	listSymbols      bool
+	version          string
+	savePacketData   bool
+	decodePacketData bool
 }
 
 var flags = Flags{}
 var logger *zap.Logger
 var sugar *zap.SugaredLogger
 var bot *Bot
-
-type constantClock time.Time
-
-func (c constantClock) Now() time.Time { return time.Time(c) }
-func (c constantClock) NewTicker(d time.Duration) *time.Ticker {
-	return &time.Ticker{}
-}
 
 func init() {
 	flag.StringVar(&flags.version, "version", "", "Version of the application")
@@ -104,6 +98,7 @@ func init() {
 	flag.StringVar(&flags.outputDir, "output", "", "Directory to output mismatched packets to")
 	flag.BoolVar(&flags.timestamp, "timestamp", false, "Add a timestamp to the output files")
 	flag.BoolVar(&flags.savePacketData, "save-packets", false, "Store packet bytes in output directory")
+	flag.BoolVar(&flags.decodePacketData, "decode-packets", false, "Decode packet data")
 	flag.Parse()
 
 	if flags.listSymbols {
@@ -233,7 +228,7 @@ func main() {
 	}
 
 	symbols := make([]evr.Symbol, len(evr.SymbolTypes))
-	for k, _ := range evr.SymbolTypes {
+	for k := range evr.SymbolTypes {
 		if len(includes) > 0 {
 			if !lo.Contains(includes, evr.Symbol(k)) {
 				continue
@@ -250,7 +245,7 @@ func main() {
 		logger.Fatal("No symbols to listen for")
 	}
 	var fn func(h *httpStream, messages []evr.Message)
-	if flags.botToken == "" {
+	if flags.botToken != "" {
 		logger.Info("Discord Bot Token", zap.String("token", flags.botToken))
 		bot = NewBot(context.Background(), logger, flags.botToken, flags.botChannel, flags.msgFormat, flags.rateLimit, marshalFn)
 
@@ -560,7 +555,7 @@ func writePacketSetToFile(in []byte, out []byte) {
 	}
 }
 
-func writePacketToFile(data []byte, symbol evr.Symbol, withTimestamp bool) error {
+func writeMessageDataToFile(data []byte, symbol evr.Symbol, withTimestamp bool) error {
 	// Save the struct to a binary file in the output directory
 	ts := ""
 	if withTimestamp {
@@ -646,6 +641,7 @@ type httpStream struct {
 }
 
 func (h *httpStream) run() {
+	baseLogger := logger
 	// Here, you can process the reassembled TCP stream
 	buf := make([]byte, 4096)
 	for {
